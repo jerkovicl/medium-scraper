@@ -468,7 +468,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output-dir",
-        default=".",
+        default="out",
         metavar="DIR",
         help="Directory to write output file(s) into. Auto-names files as <handle>_<timestamp>.<ext>",
     )
@@ -519,16 +519,12 @@ def main() -> None:
         sys.exit(1)
 
     if args.urls_only:
-        if args.output_dir != ".":
-            out = Path(args.output_dir)
-            out.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            txt_path = out / f"{handle.lstrip('@')}_{stamp}_urls.txt"
-            txt_path.write_text("\n".join(post_urls), encoding="utf-8")
-            log.info("[output] saved %d URLs → %s", len(post_urls), txt_path)
-        else:
-            for u in post_urls:
-                print(u)
+        out = Path(args.output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        txt_path = out / f"{handle.lstrip('@')}_{stamp}_urls.txt"
+        txt_path.write_text("\n".join(post_urls), encoding="utf-8")
+        log.info("[output] saved %d URLs → %s", len(post_urls), txt_path)
         return
 
     if args.limit > 0:
