@@ -26,6 +26,7 @@ def _mock_response(fixture_file: str, status_code: int = 200) -> MagicMock:
     resp = MagicMock(spec=requests.Response)
     resp.status_code = status_code
     resp.content = content
+    resp.text = content.decode("utf-8", errors="replace")
     resp.raise_for_status = MagicMock()
     if status_code >= 400:
         resp.raise_for_status.side_effect = requests.HTTPError(response=resp)
@@ -287,7 +288,57 @@ class TestSaveCsv:
 # ---------------------------------------------------------------------------
 # resolve_output_paths
 # ---------------------------------------------------------------------------
-from medium_scraper import resolve_output_paths
+from medium_scraper import fetch_api_post_urls, resolve_output_paths
+
+
+class TestFetchApiPostUrls:
+    BASE_URL = "https://medium.com/netanelbasal/"
+    HANDLE = "netanelbasal"
+
+    def test_returns_urls_from_first_page(self):
+        session = _mock_session(
+            _mock_response("api_page1.json"),
+            _mock_response("api_page2.json"),  # page2 has no 'next' — stops loop
+        )
+        urls = fetch_api_post_urls(self.BASE_URL, self.HANDLE, session, FAST_CONFIG)
+        assert "https://medium.com/netanelbasal/programmatically-focusing-form-fields-43ef2b1b34e6" in urls
+        assert "https://medium.com/netanelbasal/formvaluecontrol-angular-signal-forms-af68ce33df37" in urls
+
+    def test_paginates_until_no_next_token(self):
+        session = _mock_session(
+            _mock_response("api_page1.json"),
+            _mock_response("api_page2.json"),
+        )
+        urls = fetch_api_post_urls(self.BASE_URL, self.HANDLE, session, FAST_CONFIG)
+        assert len(urls) == 3
+        assert "https://medium.com/netanelbasal/deepsignal-angular-signal-forms-6b9e0d73eb9d" in urls
+
+    def test_deduplicates_across_pages(self):
+        session = _mock_session(
+            _mock_response("api_page1.json"),
+            _mock_response("api_page1.json"),  # same posts again
+            _mock_response("api_page2.json"),  # terminates pagination
+        )
+        urls = fetch_api_post_urls(self.BASE_URL, self.HANDLE, session, FAST_CONFIG)
+        assert len(urls) == len(set(urls))
+
+    def test_returns_empty_on_failed_request(self):
+        session = MagicMock(spec=requests.Session)
+        session.get.side_effect = requests.ConnectionError()
+        urls = fetch_api_post_urls(self.BASE_URL, self.HANDLE, session, FAST_CONFIG)
+        assert urls == []
+
+    def test_urls_are_fully_qualified(self):
+        session = _mock_session(
+            _mock_response("api_page1.json"),
+            _mock_response("api_page2.json"),
+        )
+        urls = fetch_api_post_urls(self.BASE_URL, self.HANDLE, session, FAST_CONFIG)
+        for url in urls:
+            assert url.startswith("https://medium.com/")
+
+
+
 
 
 class TestResolveOutputPaths:
@@ -326,13 +377,15 @@ from medium_scraper import collect_post_urls
 
 
 class TestCollectPostUrls:
-    def test_deduplicates_rss_and_sitemap_overlap(self):
+    def test_deduplicates_across_all_sources(self):
         with patch("medium_scraper.fetch_rss_post_urls") as mock_rss, \
-             patch("medium_scraper.fetch_sitemap_post_urls") as mock_sitemap:
+             patch("medium_scraper.fetch_sitemap_post_urls") as mock_sitemap, \
+             patch("medium_scraper.fetch_api_post_urls") as mock_api:
 
             shared_url = "https://medium.com/netanelbasal/shared-post-abc123"
             mock_rss.return_value = ([shared_url], {shared_url: ["angular"]})
-            mock_sitemap.return_value = [shared_url, "https://medium.com/netanelbasal/only-in-sitemap-xyz"]
+            mock_sitemap.return_value = [shared_url]
+            mock_api.return_value = [shared_url, "https://medium.com/netanelbasal/only-in-api-xyz"]
 
             session = MagicMock()
             urls, tags = collect_post_urls("https://medium.com/netanelbasal/", session, FAST_CONFIG)
@@ -340,17 +393,19 @@ class TestCollectPostUrls:
         assert urls.count(shared_url) == 1
         assert len(urls) == 2
 
-    def test_sitemap_urls_come_first(self):
+    def test_api_urls_come_first(self):
         with patch("medium_scraper.fetch_rss_post_urls") as mock_rss, \
-             patch("medium_scraper.fetch_sitemap_post_urls") as mock_sitemap:
+             patch("medium_scraper.fetch_sitemap_post_urls") as mock_sitemap, \
+             patch("medium_scraper.fetch_api_post_urls") as mock_api:
 
             rss_url = "https://medium.com/netanelbasal/rss-only"
-            sitemap_url = "https://medium.com/netanelbasal/sitemap-only"
+            api_url = "https://medium.com/netanelbasal/api-only"
             mock_rss.return_value = ([rss_url], {})
-            mock_sitemap.return_value = [sitemap_url]
+            mock_sitemap.return_value = []
+            mock_api.return_value = [api_url]
 
             session = MagicMock()
             urls, _ = collect_post_urls("https://medium.com/netanelbasal/", session, FAST_CONFIG)
 
-        assert urls[0] == sitemap_url
+        assert urls[0] == api_url
         assert urls[1] == rss_url

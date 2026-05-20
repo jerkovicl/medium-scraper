@@ -119,7 +119,7 @@ def fetch_rss_post_urls(
 ) -> tuple[list[str], dict[str, list[str]]]:
     """
     Fetch the RSS feed for a publication.
-    Returns (urls, tags_by_url).
+    Returns (urls, tags_by_url). RSS gives ~10 most recent posts plus tags.
     """
     url = rss_url_for(handle)
     log.info("[rss] fetching %s", url)
@@ -143,6 +143,88 @@ def fetch_rss_post_urls(
         tags_by_url[clean] = [c.text.strip() for c in item.find_all("category") if c.text.strip()]
     log.info("[rss] found %d posts", len(urls))
     return urls, tags_by_url
+
+
+def _parse_medium_json(text: str) -> dict:
+    """Strip Medium's XSS protection prefix and parse JSON."""
+    idx = text.find("{")
+    if idx == -1:
+        return {}
+    try:
+        return json.loads(text[idx:])
+    except json.JSONDecodeError:
+        return {}
+
+
+def fetch_api_post_urls(
+    base_url: str,
+    handle: str,
+    session: requests.Session,
+    config: ScraperConfig,
+) -> list[str]:
+    """
+    Retrieve ALL post URLs via Medium's internal JSON API.
+    Paginates automatically until all posts are fetched.
+
+    Medium returns 25 posts per page. Each page provides a `paging.next.to`
+    token used to request the next page via:
+      GET /_/api/collections/{collectionId}/stream?to={token}&limit=25
+    """
+    first_url = base_url.rstrip("/") + "?format=json&limit=25"
+    log.info("[api] fetching %s", first_url)
+    resp = get(first_url, session, config)
+    if not resp:
+        log.info("[api] unavailable")
+        return []
+
+    data = _parse_medium_json(resp.text)
+    payload = data.get("payload", {})
+    collection = payload.get("collection", {})
+    collection_id = collection.get("id")
+    if not collection_id:
+        log.warning("[api] could not find collection ID")
+        return []
+
+    post_urls: list[str] = []
+    seen: set[str] = set()
+
+    def _extract_urls(payload: dict) -> None:
+        posts = payload.get("references", {}).get("Post", {})
+        for post in posts.values():
+            slug = post.get("uniqueSlug") or post.get("slug")
+            if not slug:
+                continue
+            url = f"https://medium.com/{handle.lstrip('@')}/{slug}"
+            clean = _clean_url(url)
+            if clean not in seen:
+                seen.add(clean)
+                post_urls.append(clean)
+
+    _extract_urls(payload)
+    log.info("[api] page 1: %d posts so far", len(post_urls))
+
+    paging = payload.get("paging", {})
+    page = 2
+    while paging.get("next"):
+        to = paging["next"].get("to")
+        if not to:
+            break
+        time.sleep(config.delay)
+        page_url = f"https://medium.com/_/api/collections/{collection_id}/stream?to={to}&limit=25"
+        log.info("[api] page %d: %s", page, page_url)
+        r = get(page_url, session, config)
+        if not r:
+            break
+        page_data = _parse_medium_json(r.text)
+        page_payload = page_data.get("payload", {})
+        before = len(post_urls)
+        _extract_urls(page_payload)
+        log.info("[api] page %d: %d new posts (%d total)", page, len(post_urls) - before, len(post_urls))
+        paging = page_payload.get("paging", {})
+        page += 1
+
+    log.info("[api] found %d post URLs total", len(post_urls))
+    return post_urls
 
 
 def fetch_sitemap_post_urls(
@@ -202,15 +284,24 @@ def collect_post_urls(
     session: requests.Session,
     config: ScraperConfig,
 ) -> tuple[list[str], dict[str, list[str]]]:
-    """Returns (deduplicated_urls, tags_by_url)."""
+    """Returns (deduplicated_urls, tags_by_url).
+
+    Sources (most-complete first):
+      1. JSON API  — paginates through ALL posts via Medium's internal API
+      2. Sitemap   — structured XML, fallback for publications with sitemap
+      3. RSS feed  — only ~10 latest, but carries tag/category data
+    """
     handle = publication_handle(base_url)
     urls_rss, tags_by_url = fetch_rss_post_urls(handle, session, config)
     time.sleep(config.delay)
     urls_sitemap = fetch_sitemap_post_urls(handle, session, config)
+    time.sleep(config.delay)
+    urls_api = fetch_api_post_urls(base_url, handle, session, config)
 
     seen: set[str] = set()
     merged: list[str] = []
-    for u in urls_sitemap + urls_rss:   # sitemap first — more complete
+    # API first (most complete), then sitemap, then RSS
+    for u in urls_api + urls_sitemap + urls_rss:
         clean = _clean_url(u)
         if clean and clean not in seen:
             seen.add(clean)
