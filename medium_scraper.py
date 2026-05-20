@@ -519,8 +519,16 @@ def main() -> None:
         sys.exit(1)
 
     if args.urls_only:
-        for u in post_urls:
-            print(u)
+        if args.output_dir != ".":
+            out = Path(args.output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            txt_path = out / f"{handle.lstrip('@')}_{stamp}_urls.txt"
+            txt_path.write_text("\n".join(post_urls), encoding="utf-8")
+            log.info("[output] saved %d URLs → %s", len(post_urls), txt_path)
+        else:
+            for u in post_urls:
+                print(u)
         return
 
     if args.limit > 0:
