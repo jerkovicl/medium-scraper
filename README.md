@@ -9,9 +9,37 @@ A Python scraper using **BeautifulSoup4** to scrape all blog posts from any Medi
 - Outputs to **JSON** or **CSV**
 - Configurable delay between requests
 
-## Installation
+## Getting Started
+
+### Option 1 — Dev Container (recommended)
+
+Requires [VS Code](https://code.visualstudio.com/) + the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers), or [GitHub Codespaces](https://github.com/features/codespaces).
+
+1. Clone the repo and open it in VS Code:
+   ```bash
+   git clone https://github.com/jerkovicl/medium-scraper.git
+   cd medium-scraper
+   code .
+   ```
+2. When prompted **"Reopen in Container"**, click it — or open the Command Palette (`Ctrl+Shift+P`) and run **Dev Containers: Reopen in Container**.
+3. The container builds automatically and installs all dependencies. You're ready to go.
+
+### Option 2 — Local setup
+
+Requires Python 3.12+.
 
 ```bash
+git clone https://github.com/jerkovicl/medium-scraper.git
+cd medium-scraper
+
+# Create and activate a virtual environment (recommended)
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
