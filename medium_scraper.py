@@ -1,6 +1,6 @@
 """
 Medium Blog Scraper using BeautifulSoup4
-Usage: python medium_scraper.py --url https://medium.com/netanelbasal/ --output posts.json
+Usage: python medium_scraper.py --url https://medium.com/netanelbasal/ --output-dir ./out
 
 Approach:
   1. Fetch all post URLs via the publication's RSS feed + sitemap
@@ -10,11 +10,13 @@ Approach:
 import argparse
 import csv
 import json
+import logging
 import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -35,6 +37,14 @@ HEADERS = {
 REQUEST_DELAY = 1.0   # seconds between requests (be polite)
 REQUEST_TIMEOUT = 15  # seconds
 
+log = logging.getLogger("medium_scraper")
+
+
+@dataclass
+class ScraperConfig:
+    delay: float = REQUEST_DELAY
+    timeout: int = REQUEST_TIMEOUT
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -47,44 +57,73 @@ class Post:
     published_at: str = ""
     tags: list[str] = field(default_factory=list)
     subtitle: str = ""
-    claps: str = ""
     reading_time: str = ""
     description: str = ""
+    image: str = ""
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def get(url: str, session: requests.Session, retries: int = 3) -> Optional[requests.Response]:
+def get(
+    url: str,
+    session: requests.Session,
+    config: ScraperConfig,
+    retries: int = 3,
+) -> Optional[requests.Response]:
     for attempt in range(retries):
         try:
-            resp = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+            resp = session.get(url, headers=HEADERS, timeout=config.timeout)
             resp.raise_for_status()
             return resp
         except requests.RequestException as e:
-            print(f"  [warn] attempt {attempt + 1}/{retries} failed for {url}: {e}")
+            log.warning("attempt %d/%d failed for %s: %s", attempt + 1, retries, url, e)
             time.sleep(2 ** attempt)
     return None
 
 
 def publication_handle(url: str) -> str:
-    """Extract 'netanelbasal' from 'https://medium.com/netanelbasal/'"""
-    path = urlparse(url).path.strip("/")
-    # e.g. 'netanelbasal' or '@username'
+    """
+    Extract the publication handle from a Medium URL.
+
+    Supports:
+      https://medium.com/netanelbasal/   → 'netanelbasal'
+      https://medium.com/@netanelbasal/ → '@netanelbasal'
+      https://netbasal.medium.com/       → '@netbasal'
+    """
+    parsed = urlparse(url)
+    # Personal blog subdomain: username.medium.com
+    if parsed.netloc.endswith(".medium.com") and parsed.netloc != "medium.com":
+        username = parsed.netloc.split(".medium.com")[0]
+        return f"@{username}"
+    # Publication or @username path on medium.com
+    path = parsed.path.strip("/")
     return path.split("/")[0]
+
+
+def rss_url_for(handle: str) -> str:
+    return f"https://medium.com/feed/{handle}"
+
+
+def sitemap_url_for(handle: str) -> str:
+    return f"https://medium.com/sitemap/{handle}"
 
 
 # ---------------------------------------------------------------------------
 # Step 1: collect post URLs
 # ---------------------------------------------------------------------------
-def fetch_rss_post_urls(handle: str, session: requests.Session) -> tuple[list[str], dict[str, list[str]]]:
+def fetch_rss_post_urls(
+    handle: str,
+    session: requests.Session,
+    config: ScraperConfig,
+) -> tuple[list[str], dict[str, list[str]]]:
     """
-    Medium RSS feeds provide up to ~10 most-recent posts.
-    Returns (urls, tags_by_url) where tags_by_url maps cleaned URL → list of tags.
+    Fetch the RSS feed for a publication.
+    Returns (urls, tags_by_url).
     """
-    rss_url = f"https://medium.com/feed/{handle}"
-    print(f"[rss] fetching {rss_url}")
-    resp = get(rss_url, session)
+    url = rss_url_for(handle)
+    log.info("[rss] fetching %s", url)
+    resp = get(url, session, config)
     if not resp:
         return [], {}
     soup = BeautifulSoup(resp.content, "xml")
@@ -92,31 +131,37 @@ def fetch_rss_post_urls(handle: str, session: requests.Session) -> tuple[list[st
     tags_by_url: dict[str, list[str]] = {}
     for item in soup.find_all("item"):
         link = item.find("link")
-        url = link.text.strip() if link else (item.find("guid").text.strip() if item.find("guid") else None)
-        if not url:
+        item_url = (
+            link.text.strip()
+            if link
+            else (item.find("guid").text.strip() if item.find("guid") else None)
+        )
+        if not item_url:
             continue
-        clean = url.split("?")[0].split("#")[0].rstrip("/")
+        clean = _clean_url(item_url)
         urls.append(clean)
         tags_by_url[clean] = [c.text.strip() for c in item.find_all("category") if c.text.strip()]
-    print(f"[rss] found {len(urls)} posts")
+    log.info("[rss] found %d posts", len(urls))
     return urls, tags_by_url
 
 
-def fetch_sitemap_post_urls(handle: str, session: requests.Session) -> list[str]:
+def fetch_sitemap_post_urls(
+    handle: str,
+    session: requests.Session,
+    config: ScraperConfig,
+) -> list[str]:
     """
-    Try Medium's sitemap for the publication. Medium serves sitemaps at:
-      https://medium.com/sitemap/<handle>  (may 404 for some publications)
-    Falls back gracefully if unavailable.
+    Try Medium's sitemap for the publication.
+    Falls back gracefully if unavailable (many publications return 404).
     """
-    sitemap_index_url = f"https://medium.com/sitemap/{handle}"
-    print(f"[sitemap] fetching index {sitemap_index_url}")
-    resp = get(sitemap_index_url, session)
+    index_url = sitemap_url_for(handle)
+    log.info("[sitemap] fetching index %s", index_url)
+    resp = get(index_url, session, config)
     if not resp:
-        print("[sitemap] sitemap unavailable, relying on RSS only")
+        log.info("[sitemap] unavailable, relying on RSS only")
         return []
 
     soup = BeautifulSoup(resp.content, "lxml")
-    # Find links to monthly XML sitemaps
     monthly_urls = []
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -126,58 +171,72 @@ def fetch_sitemap_post_urls(handle: str, session: requests.Session) -> list[str]
             monthly_urls.append(href)
 
     if not monthly_urls:
-        monthly_urls = [sitemap_index_url]
+        monthly_urls = [index_url]
 
     post_urls: list[str] = []
-    seen_in_sitemap: set[str] = set()
+    seen: set[str] = set()
     for smap_url in monthly_urls:
-        time.sleep(REQUEST_DELAY)
-        print(f"[sitemap] fetching {smap_url}")
-        r = get(smap_url, session)
+        time.sleep(config.delay)
+        log.info("[sitemap] fetching %s", smap_url)
+        r = get(smap_url, session, config)
         if not r:
             continue
         s = BeautifulSoup(r.content, "xml")
         for loc in s.find_all("loc"):
-            u = loc.text.strip()
-            clean = u.split("?")[0].split("#")[0].rstrip("/")
-            if (clean and f"medium.com/{handle}" in clean
-                    and clean != f"https://medium.com/{handle}"
-                    and clean not in seen_in_sitemap):
-                seen_in_sitemap.add(clean)
+            clean = _clean_url(loc.text.strip())
+            if (
+                clean
+                and f"medium.com/{handle}" in clean
+                and clean != f"https://medium.com/{handle}"
+                and clean not in seen
+            ):
+                seen.add(clean)
                 post_urls.append(clean)
 
-    print(f"[sitemap] found {len(post_urls)} post URLs")
+    log.info("[sitemap] found %d post URLs", len(post_urls))
     return post_urls
 
 
-def collect_post_urls(base_url: str, session: requests.Session) -> tuple[list[str], dict[str, list[str]]]:
-    """Returns (urls, tags_by_url)."""
+def collect_post_urls(
+    base_url: str,
+    session: requests.Session,
+    config: ScraperConfig,
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Returns (deduplicated_urls, tags_by_url)."""
     handle = publication_handle(base_url)
-    urls_rss, tags_by_url = fetch_rss_post_urls(handle, session)
-    time.sleep(REQUEST_DELAY)
-    urls_sitemap = fetch_sitemap_post_urls(handle, session)
+    urls_rss, tags_by_url = fetch_rss_post_urls(handle, session, config)
+    time.sleep(config.delay)
+    urls_sitemap = fetch_sitemap_post_urls(handle, session, config)
 
-    # Merge & de-duplicate; sitemap is more complete so goes first
     seen: set[str] = set()
     merged: list[str] = []
-    for u in urls_sitemap + urls_rss:
-        clean = u.split("?")[0].split("#")[0].rstrip("/")
+    for u in urls_sitemap + urls_rss:   # sitemap first — more complete
+        clean = _clean_url(u)
         if clean and clean not in seen:
             seen.add(clean)
             merged.append(clean)
 
-    print(f"[collect] {len(merged)} unique post URLs total")
+    log.info("[collect] %d unique post URLs total", len(merged))
     return merged, tags_by_url
+
+
+def _clean_url(url: str) -> str:
+    return url.split("?")[0].split("#")[0].rstrip("/")
 
 
 # ---------------------------------------------------------------------------
 # Step 2: scrape individual post pages
 # ---------------------------------------------------------------------------
-def scrape_post(url: str, session: requests.Session, rss_tags: Optional[list[str]] = None) -> Post:
+def scrape_post(
+    url: str,
+    session: requests.Session,
+    config: ScraperConfig,
+    rss_tags: Optional[list[str]] = None,
+) -> Post:
     post = Post(url=url)
-    resp = get(url, session)
+    resp = get(url, session, config)
     if not resp:
-        print(f"  [skip] could not fetch {url}")
+        log.warning("[skip] could not fetch %s", url)
         return post
 
     soup = BeautifulSoup(resp.content, "lxml")
@@ -191,12 +250,12 @@ def scrape_post(url: str, session: requests.Session, rss_tags: Optional[list[str
         if h1:
             post.title = h1.get_text(strip=True)
 
-    # --- Subtitle / description ---
-    # og:description is reliable; h2 often captures author name on Medium
+    # --- Subtitle ---
     og_desc = soup.find("meta", property="og:description")
     if og_desc:
         post.subtitle = og_desc.get("content", "")
 
+    # --- Description ---
     meta_desc = soup.find("meta", attrs={"name": "description"})
     if meta_desc:
         post.description = meta_desc.get("content", "")
@@ -219,7 +278,7 @@ def scrape_post(url: str, session: requests.Session, rss_tags: Optional[list[str
             except (json.JSONDecodeError, AttributeError):
                 pass
 
-    # --- Published date (prefer article:published_time for clean ISO format) ---
+    # --- Published date ---
     pub_meta = soup.find("meta", property="article:published_time")
     if pub_meta:
         post.published_at = pub_meta.get("content", "")
@@ -228,7 +287,7 @@ def scrape_post(url: str, session: requests.Session, rss_tags: Optional[list[str
         if time_tag:
             post.published_at = time_tag.get("datetime", time_tag.get_text(strip=True))
 
-    # --- Tags: RSS categories are most reliable for Medium ---
+    # --- Tags (RSS categories are most reliable for Medium) ---
     if rss_tags:
         post.tags = rss_tags
     else:
@@ -242,7 +301,7 @@ def scrape_post(url: str, session: requests.Session, rss_tags: Optional[list[str
                 for m in soup.find_all("meta", property="article:tag")
             ]
 
-    # --- Reading time (twitter:data1 meta or inline text) ---
+    # --- Reading time ---
     tw_data = soup.find("meta", attrs={"name": "twitter:data1"})
     if tw_data and "read" in tw_data.get("content", "").lower():
         post.reading_time = tw_data.get("content", "")
@@ -252,77 +311,120 @@ def scrape_post(url: str, session: requests.Session, rss_tags: Optional[list[str
         if rt_match:
             post.reading_time = reading_re.search(rt_match).group()
 
+    # --- Cover image ---
+    og_image = soup.find("meta", property="og:image")
+    if og_image:
+        post.image = og_image.get("content", "")
+
     return post
 
 
 # ---------------------------------------------------------------------------
 # Step 3: output
 # ---------------------------------------------------------------------------
-def save_json(posts: list[Post], path: str) -> None:
-    data = [asdict(p) for p in posts]
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"[output] saved {len(posts)} posts → {path}")
+def save_json(posts: list[Post], path: Path) -> None:
+    path.write_text(
+        json.dumps([asdict(p) for p in posts], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    log.info("[output] saved %d posts → %s", len(posts), path)
 
 
-def save_csv(posts: list[Post], path: str) -> None:
+def save_csv(posts: list[Post], path: Path) -> None:
     if not posts:
         return
     fieldnames = list(asdict(posts[0]).keys())
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for p in posts:
             row = asdict(p)
-            row["tags"] = ", ".join(row["tags"])  # flatten list for CSV
+            row["tags"] = ", ".join(row["tags"])
             writer.writerow(row)
-    print(f"[output] saved {len(posts)} posts → {path}")
+    log.info("[output] saved %d posts → %s", len(posts), path)
+
+
+def resolve_output_paths(
+    output_dir: str,
+    handle: str,
+    fmt: str,
+) -> list[Path]:
+    """Return list of output Path(s) based on --output-dir and --format."""
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem = f"{handle.lstrip('@')}_{stamp}"
+    paths = []
+    if fmt in ("json", "both"):
+        paths.append(out / f"{stem}.json")
+    if fmt in ("csv", "both"):
+        paths.append(out / f"{stem}.csv")
+    return paths
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def main() -> None:
-    global REQUEST_DELAY
-
-    parser = argparse.ArgumentParser(description="Scrape all blog posts from a Medium publication.")
-    parser.add_argument(
-        "--url",
-        default="https://medium.com/netanelbasal/",
-        help="Medium publication URL (default: https://medium.com/netanelbasal/)",
+    parser = argparse.ArgumentParser(
+        description="Scrape all blog posts from a Medium publication.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--output",
-        default="posts.json",
-        help="Output file path. Use .json or .csv extension (default: posts.json)",
+        "--url",
+        required=True,
+        help="Medium publication URL  e.g. https://medium.com/netanelbasal/ or https://netbasal.medium.com/",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=".",
+        metavar="DIR",
+        help="Directory to write output file(s) into. Auto-names files as <handle>_<timestamp>.<ext>",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["json", "csv", "both"],
+        default="json",
+        help="Output format",
     )
     parser.add_argument(
         "--delay",
         type=float,
         default=REQUEST_DELAY,
-        help=f"Delay in seconds between requests (default: {REQUEST_DELAY})",
+        help="Seconds to wait between requests",
     )
     parser.add_argument(
         "--limit",
         type=int,
         default=0,
-        help="Max number of posts to scrape (0 = no limit)",
+        help="Max posts to scrape (0 = no limit)",
     )
     parser.add_argument(
         "--urls-only",
         action="store_true",
-        help="Only collect and print post URLs, skip scraping post details",
+        help="Only print collected post URLs, skip scraping details",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable debug logging",
     )
     args = parser.parse_args()
-    REQUEST_DELAY = args.delay
 
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(message)s",
+    )
+
+    config = ScraperConfig(delay=args.delay)
     session = requests.Session()
     session.headers.update(HEADERS)
+    handle = publication_handle(args.url)
 
     # 1. Collect URLs
-    post_urls, tags_by_url = collect_post_urls(args.url, session)
+    post_urls, tags_by_url = collect_post_urls(args.url, session, config)
     if not post_urls:
-        print("[error] No post URLs found. The publication might be JS-gated or the handle is wrong.")
+        log.error("No post URLs found. Check the URL or try again later.")
         sys.exit(1)
 
     if args.urls_only:
@@ -332,30 +434,32 @@ def main() -> None:
 
     if args.limit > 0:
         post_urls = post_urls[: args.limit]
-        print(f"[info] limiting to {args.limit} posts")
+        log.info("[info] limiting to %d posts", args.limit)
 
-    # 2. Scrape each post (pass RSS tags when available)
+    # 2. Scrape each post
     posts: list[Post] = []
+    total = len(post_urls)
     for i, url in enumerate(post_urls, 1):
-        print(f"[{i}/{len(post_urls)}] scraping {url}")
+        log.info("[%d/%d] scraping %s", i, total, url)
         rss_tags = tags_by_url.get(url.rstrip("/"))
-        post = scrape_post(url, session, rss_tags=rss_tags)
-        posts.append(post)
-        time.sleep(REQUEST_DELAY)
+        posts.append(scrape_post(url, session, config, rss_tags=rss_tags))
+        time.sleep(config.delay)
 
     # 3. Save
-    if args.output.endswith(".csv"):
-        save_csv(posts, args.output)
-    else:
-        save_json(posts, args.output)
+    for out_path in resolve_output_paths(args.output_dir, handle, args.format):
+        if out_path.suffix == ".json":
+            save_json(posts, out_path)
+        else:
+            save_csv(posts, out_path)
 
-    # Quick summary
-    print("\n--- Summary ---")
-    print(f"Total posts scraped : {len(posts)}")
-    print(f"Posts with title    : {sum(1 for p in posts if p.title)}")
-    print(f"Posts with author   : {sum(1 for p in posts if p.author)}")
-    print(f"Posts with date     : {sum(1 for p in posts if p.published_at)}")
-    print(f"Posts with tags     : {sum(1 for p in posts if p.tags)}")
+    # Summary
+    log.info("\n--- Summary ---")
+    log.info("Total posts scraped : %d", len(posts))
+    log.info("Posts with title    : %d", sum(1 for p in posts if p.title))
+    log.info("Posts with author   : %d", sum(1 for p in posts if p.author))
+    log.info("Posts with date     : %d", sum(1 for p in posts if p.published_at))
+    log.info("Posts with tags     : %d", sum(1 for p in posts if p.tags))
+    log.info("Posts with image    : %d", sum(1 for p in posts if p.image))
 
 
 if __name__ == "__main__":

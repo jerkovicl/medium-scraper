@@ -39,6 +39,11 @@ def _mock_session(*side_effects) -> MagicMock:
     return session
 
 
+from medium_scraper import ScraperConfig
+
+FAST_CONFIG = ScraperConfig(delay=0)
+
+
 # ---------------------------------------------------------------------------
 # publication_handle
 # ---------------------------------------------------------------------------
@@ -58,6 +63,12 @@ class TestPublicationHandle:
     def test_nested_path_returns_first_segment(self):
         assert publication_handle("https://medium.com/netanelbasal/some-post-slug") == "netanelbasal"
 
+    def test_personal_subdomain_blog(self):
+        assert publication_handle("https://netbasal.medium.com/") == "@netbasal"
+
+    def test_personal_subdomain_no_trailing_slash(self):
+        assert publication_handle("https://netbasal.medium.com") == "@netbasal"
+
 
 # ---------------------------------------------------------------------------
 # fetch_rss_post_urls
@@ -68,7 +79,7 @@ from medium_scraper import fetch_rss_post_urls
 class TestFetchRssPostUrls:
     def test_returns_urls_and_tags(self):
         session = _mock_session(_mock_response("rss_feed.xml"))
-        urls, tags_by_url = fetch_rss_post_urls("netanelbasal", session)
+        urls, tags_by_url = fetch_rss_post_urls("netanelbasal", session, FAST_CONFIG)
 
         assert len(urls) == 2
         assert "https://medium.com/netanelbasal/programmatically-focusing-form-fields-43ef2b1b34e6" in urls
@@ -76,7 +87,7 @@ class TestFetchRssPostUrls:
 
     def test_tags_parsed_per_post(self):
         session = _mock_session(_mock_response("rss_feed.xml"))
-        urls, tags_by_url = fetch_rss_post_urls("netanelbasal", session)
+        _, tags_by_url = fetch_rss_post_urls("netanelbasal", session, FAST_CONFIG)
 
         first_url = "https://medium.com/netanelbasal/programmatically-focusing-form-fields-43ef2b1b34e6"
         assert "angular" in tags_by_url[first_url]
@@ -86,7 +97,7 @@ class TestFetchRssPostUrls:
     def test_returns_empty_on_failed_request(self):
         session = MagicMock(spec=requests.Session)
         session.get.side_effect = requests.ConnectionError("unreachable")
-        urls, tags_by_url = fetch_rss_post_urls("netanelbasal", session)
+        urls, tags_by_url = fetch_rss_post_urls("netanelbasal", session, FAST_CONFIG)
 
         assert urls == []
         assert tags_by_url == {}
@@ -94,7 +105,7 @@ class TestFetchRssPostUrls:
     def test_urls_are_cleaned(self):
         """Query params and fragments must be stripped."""
         session = _mock_session(_mock_response("rss_feed.xml"))
-        urls, _ = fetch_rss_post_urls("netanelbasal", session)
+        urls, _ = fetch_rss_post_urls("netanelbasal", session, FAST_CONFIG)
         for url in urls:
             assert "?" not in url
             assert "#" not in url
@@ -109,14 +120,12 @@ from medium_scraper import fetch_sitemap_post_urls
 
 class TestFetchSitemapPostUrls:
     def test_returns_post_urls_from_sitemap(self):
-        # First call: sitemap index HTML; second call: monthly XML
         session = _mock_session(
             _mock_response("sitemap_index.html"),
             _mock_response("sitemap_monthly.xml"),
             _mock_response("sitemap_monthly.xml"),
         )
-        with patch("medium_scraper.REQUEST_DELAY", 0):
-            urls = fetch_sitemap_post_urls("netanelbasal", session)
+        urls = fetch_sitemap_post_urls("netanelbasal", session, FAST_CONFIG)
 
         assert len(urls) == 2
         assert "https://medium.com/netanelbasal/programmatically-focusing-form-fields-43ef2b1b34e6" in urls
@@ -128,8 +137,7 @@ class TestFetchSitemapPostUrls:
             _mock_response("sitemap_monthly.xml"),
             _mock_response("sitemap_monthly.xml"),
         )
-        with patch("medium_scraper.REQUEST_DELAY", 0):
-            urls = fetch_sitemap_post_urls("netanelbasal", session)
+        urls = fetch_sitemap_post_urls("netanelbasal", session, FAST_CONFIG)
 
         assert "https://medium.com/netanelbasal" not in urls
 
@@ -140,8 +148,7 @@ class TestFetchSitemapPostUrls:
             _mock_response("sitemap_index.html", status_code=404),
             _mock_response("sitemap_index.html", status_code=404),
         )
-        with patch("medium_scraper.REQUEST_DELAY", 0):
-            urls = fetch_sitemap_post_urls("netanelbasal", session)
+        urls = fetch_sitemap_post_urls("netanelbasal", session, FAST_CONFIG)
 
         assert urls == []
 
@@ -158,37 +165,37 @@ class TestScrapePostPrimaryMetaTags:
         self.url = "https://medium.com/netanelbasal/programmatically-focusing-form-fields-43ef2b1b34e6"
 
     def test_title_extracted(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert post.title == "Programmatically Focusing Form Fields in Angular Signal Forms"
 
     def test_subtitle_from_og_description(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert "programmatically focus" in post.subtitle.lower()
 
     def test_author_from_meta(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert post.author == "Netanel Basal"
 
     def test_published_at_iso_format(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert post.published_at == "2026-01-15T07:08:22.203Z"
 
     def test_reading_time_from_twitter_meta(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert post.reading_time == "2 min read"
 
     def test_description_from_meta_description(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert "Angular Signal Forms" in post.description
 
     def test_rss_tags_used_when_provided(self):
         session = _mock_session(_mock_response("post_page.html"))
-        post = scrape_post(self.url, session, rss_tags=["angular", "forms"])
+        post = scrape_post(self.url, session, FAST_CONFIG, rss_tags=["angular", "forms"])
         assert post.tags == ["angular", "forms"]
 
     def test_url_preserved(self):
         session = _mock_session(_mock_response("post_page.html"))
-        post = scrape_post(self.url, session)
+        post = scrape_post(self.url, session, FAST_CONFIG)
         assert post.url == self.url
 
 
@@ -201,31 +208,31 @@ class TestScrapePostFallbacks:
         self.url = "https://medium.com/netanelbasal/fallback-test"
 
     def test_title_falls_back_to_h1(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert post.title == "Fallback Test Post Title"
 
     def test_date_falls_back_to_time_tag(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert post.published_at == "2025-06-01T10:00:00Z"
 
     def test_tags_from_keywords_meta(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert "angular" in post.tags
         assert "javascript" in post.tags
         assert "signals" in post.tags
 
     def test_author_from_json_ld_list(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert post.author == "Test Author"
 
     def test_reading_time_from_inline_text(self):
-        post = scrape_post(self.url, self.session)
+        post = scrape_post(self.url, self.session, FAST_CONFIG)
         assert post.reading_time == "5 min read"
 
     def test_empty_post_on_failed_request(self):
         session = MagicMock(spec=requests.Session)
         session.get.side_effect = requests.ConnectionError()
-        post = scrape_post("https://medium.com/netanelbasal/bad-url", session)
+        post = scrape_post("https://medium.com/netanelbasal/bad-url", session, FAST_CONFIG)
         assert post.title == ""
         assert post.author == ""
 
@@ -239,35 +246,77 @@ from medium_scraper import Post, save_csv, save_json
 class TestSaveJson:
     def test_creates_valid_json_file(self, tmp_path):
         posts = [Post(title="Test", url="https://example.com", author="Alice", tags=["a", "b"])]
-        out = str(tmp_path / "out.json")
+        out = tmp_path / "out.json"
         save_json(posts, out)
 
-        data = json.loads(Path(out).read_text(encoding="utf-8"))
+        data = json.loads(out.read_text(encoding="utf-8"))
         assert len(data) == 1
         assert data[0]["title"] == "Test"
         assert data[0]["tags"] == ["a", "b"]
 
     def test_empty_list_writes_empty_array(self, tmp_path):
-        out = str(tmp_path / "empty.json")
+        out = tmp_path / "empty.json"
         save_json([], out)
-        assert json.loads(Path(out).read_text()) == []
+        assert json.loads(out.read_text()) == []
+
+    def test_image_field_included(self, tmp_path):
+        posts = [Post(title="With Image", url="https://example.com", image="https://img.example.com/pic.jpg")]
+        out = tmp_path / "img.json"
+        save_json(posts, out)
+        data = json.loads(out.read_text(encoding="utf-8"))
+        assert data[0]["image"] == "https://img.example.com/pic.jpg"
 
 
 class TestSaveCsv:
     def test_creates_csv_with_header_and_row(self, tmp_path):
         posts = [Post(title="CSV Post", url="https://example.com", tags=["x", "y"])]
-        out = str(tmp_path / "out.csv")
+        out = tmp_path / "out.csv"
         save_csv(posts, out)
 
-        lines = Path(out).read_text(encoding="utf-8").strip().splitlines()
+        lines = out.read_text(encoding="utf-8").strip().splitlines()
         assert lines[0].startswith("title")        # header row
         assert "CSV Post" in lines[1]
         assert "x, y" in lines[1]                  # tags flattened
 
     def test_does_nothing_for_empty_list(self, tmp_path):
-        out = str(tmp_path / "empty.csv")
+        out = tmp_path / "empty.csv"
         save_csv([], out)
-        assert not Path(out).exists()
+        assert not out.exists()
+
+
+# ---------------------------------------------------------------------------
+# resolve_output_paths
+# ---------------------------------------------------------------------------
+from medium_scraper import resolve_output_paths
+
+
+class TestResolveOutputPaths:
+    def test_json_format(self, tmp_path):
+        paths = resolve_output_paths(str(tmp_path), "netanelbasal", "json")
+        assert len(paths) == 1
+        assert paths[0].suffix == ".json"
+        assert "netanelbasal" in paths[0].name
+
+    def test_csv_format(self, tmp_path):
+        paths = resolve_output_paths(str(tmp_path), "netanelbasal", "csv")
+        assert len(paths) == 1
+        assert paths[0].suffix == ".csv"
+
+    def test_both_format(self, tmp_path):
+        paths = resolve_output_paths(str(tmp_path), "netanelbasal", "both")
+        assert len(paths) == 2
+        suffixes = {p.suffix for p in paths}
+        assert ".json" in suffixes
+        assert ".csv" in suffixes
+
+    def test_creates_output_dir_if_missing(self, tmp_path):
+        new_dir = str(tmp_path / "subdir" / "nested")
+        resolve_output_paths(new_dir, "netanelbasal", "json")
+        assert Path(new_dir).is_dir()
+
+    def test_strips_at_from_handle_in_filename(self, tmp_path):
+        paths = resolve_output_paths(str(tmp_path), "@netbasal", "json")
+        assert "@" not in paths[0].name
 
 
 # ---------------------------------------------------------------------------
@@ -279,23 +328,21 @@ from medium_scraper import collect_post_urls
 class TestCollectPostUrls:
     def test_deduplicates_rss_and_sitemap_overlap(self):
         with patch("medium_scraper.fetch_rss_post_urls") as mock_rss, \
-             patch("medium_scraper.fetch_sitemap_post_urls") as mock_sitemap, \
-             patch("medium_scraper.REQUEST_DELAY", 0):
+             patch("medium_scraper.fetch_sitemap_post_urls") as mock_sitemap:
 
             shared_url = "https://medium.com/netanelbasal/shared-post-abc123"
             mock_rss.return_value = ([shared_url], {shared_url: ["angular"]})
             mock_sitemap.return_value = [shared_url, "https://medium.com/netanelbasal/only-in-sitemap-xyz"]
 
             session = MagicMock()
-            urls, tags = collect_post_urls("https://medium.com/netanelbasal/", session)
+            urls, tags = collect_post_urls("https://medium.com/netanelbasal/", session, FAST_CONFIG)
 
         assert urls.count(shared_url) == 1
         assert len(urls) == 2
 
     def test_sitemap_urls_come_first(self):
         with patch("medium_scraper.fetch_rss_post_urls") as mock_rss, \
-             patch("medium_scraper.fetch_sitemap_post_urls") as mock_sitemap, \
-             patch("medium_scraper.REQUEST_DELAY", 0):
+             patch("medium_scraper.fetch_sitemap_post_urls") as mock_sitemap:
 
             rss_url = "https://medium.com/netanelbasal/rss-only"
             sitemap_url = "https://medium.com/netanelbasal/sitemap-only"
@@ -303,7 +350,7 @@ class TestCollectPostUrls:
             mock_sitemap.return_value = [sitemap_url]
 
             session = MagicMock()
-            urls, _ = collect_post_urls("https://medium.com/netanelbasal/", session)
+            urls, _ = collect_post_urls("https://medium.com/netanelbasal/", session, FAST_CONFIG)
 
         assert urls[0] == sitemap_url
         assert urls[1] == rss_url

@@ -11,9 +11,10 @@ Skip with: pytest tests/test_unit.py  (unit tests only)
 import pytest
 import requests
 
-from medium_scraper import collect_post_urls, scrape_post
+from medium_scraper import ScraperConfig, collect_post_urls, scrape_post
 
 TARGET_URL = "https://medium.com/netanelbasal/"
+LIVE_CONFIG = ScraperConfig(delay=0.5)
 
 
 @pytest.fixture(scope="module")
@@ -33,21 +34,17 @@ def session():
 @pytest.fixture(scope="module")
 def collected(session):
     """Collect post URLs once and reuse across all e2e tests."""
-    import medium_scraper
-    medium_scraper.REQUEST_DELAY = 0.5  # be polite but not slow
-    urls, tags_by_url = collect_post_urls(TARGET_URL, session)
+    urls, tags_by_url = collect_post_urls(TARGET_URL, session, LIVE_CONFIG)
     return urls, tags_by_url
 
 
 @pytest.fixture(scope="module")
 def first_post(collected, session):
     """Scrape the first post once and reuse."""
-    import medium_scraper
-    medium_scraper.REQUEST_DELAY = 0.5
     urls, tags_by_url = collected
     url = urls[0]
     rss_tags = tags_by_url.get(url.rstrip("/"))
-    return scrape_post(url, session, rss_tags=rss_tags)
+    return scrape_post(url, session, LIVE_CONFIG, rss_tags=rss_tags)
 
 
 # ---------------------------------------------------------------------------
@@ -132,4 +129,13 @@ class TestE2EPostScraping:
         for field_val in [first_post.title, first_post.author, first_post.subtitle]:
             assert "<" not in field_val and ">" not in field_val, (
                 f"Field contains raw HTML: {field_val!r}"
+            )
+
+    def test_image_field_is_string(self, first_post):
+        assert isinstance(first_post.image, str)
+
+    def test_image_url_when_present(self, first_post):
+        if first_post.image:
+            assert first_post.image.startswith("http"), (
+                f"image field should be a URL, got: {first_post.image!r}"
             )
