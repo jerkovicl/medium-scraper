@@ -54,6 +54,40 @@ python medium_scraper.py --url https://medium.com/netanelbasal/ --limit 20 --del
 | `reading_time` | e.g. `5 min read` |
 | `description` | Meta description |
 
+## Testing
+
+Install test dependencies:
+
+```bash
+pip install pytest pytest-mock
+```
+
+Run all tests:
+
+```bash
+pytest -v
+```
+
+Run unit tests only (fast, no internet required):
+
+```bash
+pytest tests/test_unit.py -v
+```
+
+Run e2e tests (requires internet, hits live Medium):
+
+```bash
+pytest tests/test_e2e.py -v
+```
+
+### Test structure
+
+| File | Type | Tests | Description |
+|------|------|-------|-------------|
+| `tests/test_unit.py` | Unit | 31 | All HTTP mocked via fixtures — tests URL parsing, RSS/sitemap parsing, post field extraction (primary + fallback paths), JSON/CSV output, deduplication |
+| `tests/test_e2e.py` | E2E | 15 | Live requests to `https://medium.com/netanelbasal/` — validates URL collection, post fields, ISO date format, no raw HTML in output |
+| `tests/fixtures/` | — | — | HTML/XML fixture files used by unit tests |
+
 ## Notes
 
 - Medium's pages are heavily JS-rendered; the scraper uses RSS/sitemap to discover posts reliably.
