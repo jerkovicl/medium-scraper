@@ -129,6 +129,7 @@ def fetch_sitemap_post_urls(handle: str, session: requests.Session) -> list[str]
         monthly_urls = [sitemap_index_url]
 
     post_urls: list[str] = []
+    seen_in_sitemap: set[str] = set()
     for smap_url in monthly_urls:
         time.sleep(REQUEST_DELAY)
         print(f"[sitemap] fetching {smap_url}")
@@ -139,7 +140,10 @@ def fetch_sitemap_post_urls(handle: str, session: requests.Session) -> list[str]
         for loc in s.find_all("loc"):
             u = loc.text.strip()
             clean = u.split("?")[0].split("#")[0].rstrip("/")
-            if clean and f"medium.com/{handle}" in clean and clean != f"https://medium.com/{handle}":
+            if (clean and f"medium.com/{handle}" in clean
+                    and clean != f"https://medium.com/{handle}"
+                    and clean not in seen_in_sitemap):
+                seen_in_sitemap.add(clean)
                 post_urls.append(clean)
 
     print(f"[sitemap] found {len(post_urls)} post URLs")

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Netanel Basal – Medium</title>
+    <link>https://medium.com/netanelbasal</link>
+    <description>Stories from Netanel Basal on Medium</description>
+
+    <item>
+      <title>Programmatically Focusing Form Fields in Angular Signal Forms</title>
+      <link>https://medium.com/netanelbasal/programmatically-focusing-form-fields-43ef2b1b34e6</link>
+      <guid>https://medium.com/netanelbasal/programmatically-focusing-form-fields-43ef2b1b34e6</guid>
+      <pubDate>Thu, 15 Jan 2026 07:08:22 GMT</pubDate>
+      <dc:creator>Netanel Basal</dc:creator>
+      <category>forms</category>
+      <category>angular</category>
+      <category>javascript</category>
+    </item>
+
+    <item>
+      <title>FormValueControl: Deep Dive into Angular Signal Forms Custom Controls</title>
+      <link>https://medium.com/netanelbasal/formvaluecontrol-angular-signal-forms-af68ce33df37</link>
+      <guid>https://medium.com/netanelbasal/formvaluecontrol-angular-signal-forms-af68ce33df37</guid>
+      <pubDate>Thu, 09 Jan 2026 06:55:26 GMT</pubDate>
+      <dc:creator>Netanel Basal</dc:creator>
+      <category>angular</category>
+      <category>web-development</category>
+    </item>
+  </channel>
+</rss>
